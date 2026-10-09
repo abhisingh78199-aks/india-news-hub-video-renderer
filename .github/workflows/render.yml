@@ -1,0 +1,28 @@
+name: India News Hub Video Renderer
+
+on:
+  workflow_dispatch:
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout renderer
+        uses: actions/checkout@v4
+
+      - name: Build FFmpeg renderer
+        run: docker build -t india-news-hub-renderer .
+
+      - name: Run renderer test
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}/output:/workspace/output" \
+            india-news-hub-renderer
+
+      - name: Upload renderer test
+        uses: actions/upload-artifact@v4
+        with:
+          name: india-news-hub-renderer-test
+          path: output/
+          retention-days: 1
