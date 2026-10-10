@@ -1,0 +1,18 @@
+{
+  "title": "India News Hub Real Video Integration Test",
+  "script": "Namaskar, India News Hub mein aapka swagat hai. Aaj hum ek important news development ko simple aur clear language mein samjhenge.",
+  "scenes": [
+    {
+      "heading": "WHAT HAPPENED?",
+      "text": "Verified information and key facts"
+    },
+    {
+      "heading": "WHY IT MATTERS",
+      "text": "Clear explanation for viewers"
+    },
+    {
+      "heading": "WHAT NEXT?",
+      "text": "Follow verified developments"
+    }
+  ]
+}
