@@ -1,1 +1,30 @@
+name: India News Hub Real Video Renderer
 
+on:
+  workflow_dispatch:
+
+jobs:
+  render-real:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout renderer
+        uses: actions/checkout@v4
+
+      - name: Build FFmpeg renderer
+        run: docker build -t india-news-hub-renderer .
+
+      - name: Run real input renderer
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}/input:/workspace/input" \
+            -v "${{ github.workspace }}/output:/workspace/output" \
+            --entrypoint /app/render-real.sh \
+            india-news-hub-renderer
+
+      - name: Upload real MP4
+        uses: actions/upload-artifact@v4
+        with:
+          name: india-news-hub-real-video
+          path: output/india-news-hub-real-test.mp4
+          retention-days: 1
