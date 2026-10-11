@@ -11,6 +11,47 @@ jobs:
       - name: Checkout renderer
         uses: actions/checkout@v4
 
+      - name: Download voice from Google Drive
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          NEWS_AUDIO_FILE_ID: ${{ secrets.NEWS_AUDIO_FILE_ID }}
+        run: |
+          python3 -m pip install --quiet google-auth
+
+          python3 - <<'PY'
+          import json
+          import os
+          from google.oauth2 import service_account
+          from google.auth.transport.requests import AuthorizedSession
+
+          info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
+
+          credentials = service_account.Credentials.from_service_account_info(
+              info,
+              scopes=["https://www.googleapis.com/auth/drive.readonly"]
+          )
+
+          session = AuthorizedSession(credentials)
+
+          file_id = os.environ["NEWS_AUDIO_FILE_ID"]
+
+          url = "https://www.googleapis.com/drive/v3/files/" + file_id + "?alt=media"
+
+          response = session.get(url, stream=True)
+          response.raise_for_status()
+
+          os.makedirs("input", exist_ok=True)
+
+          with open("input/voice.wav", "wb") as f:
+              for chunk in response.iter_content(chunk_size=1024 * 1024):
+                  if chunk:
+                      f.write(chunk)
+
+          print("VOICE DOWNLOAD: SUCCESS")
+          PY
+
+          ls -lh input/voice.wav
+
       - name: Build FFmpeg renderer
         run: docker build -t india-news-hub-renderer .
 
