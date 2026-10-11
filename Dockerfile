@@ -7,7 +7,7 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY render.sh /app/render.sh
-
+COPY render-real.sh /app/render-real.sh
 RUN chmod +x /app/render.sh
 
 CMD ["/app/render.sh"]
