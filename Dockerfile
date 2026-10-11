@@ -8,6 +8,6 @@ WORKDIR /app
 
 COPY render.sh /app/render.sh
 COPY render-real.sh /app/render-real.sh
-RUN chmod +x /app/render.sh
+RUN chmod +x /app/render.sh /app/render-real.sh
 
 CMD ["/app/render.sh"]
