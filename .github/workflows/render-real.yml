@@ -11,9 +11,75 @@ jobs:
       - name: Checkout renderer
         uses: actions/checkout@v4
 
+      - name: Download news input and voice
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          NEWS_AUDIO_FILE_ID: ${{ secrets.NEWS_AUDIO_FILE_ID }}
+          NEWS_RENDER_INPUT_FILE_ID: ${{ secrets.NEWS_RENDER_INPUT_FILE_ID }}
+        run: |
+          python3 -m pip install --quiet google-auth
+
+          python3 - <<'PY'
+          import json
+          import os
+          from google.oauth2 import service_account
+          from google.auth.transport.requests import AuthorizedSession
+
+          info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
+
+          credentials = service_account.Credentials.from_service_account_info(
+              info,
+              scopes=["https://www.googleapis.com/auth/drive.readonly"]
+          )
+
+          session = AuthorizedSession(credentials)
+
+          os.makedirs("input", exist_ok=True)
+
+          files = {
+              "news.json": os.environ["NEWS_RENDER_INPUT_FILE_ID"],
+              "voice.wav": os.environ["NEWS_AUDIO_FILE_ID"]
+          }
+
+          for filename, file_id in files.items():
+              url = "https://www.googleapis.com/drive/v3/files/" + file_id + "?alt=media"
+
+              response = session.get(url, stream=True)
+              response.raise_for_status()
+
+              with open("input/" + filename, "wb") as f:
+                  for chunk in response.iter_content(chunk_size=1024 * 1024):
+                      if chunk:
+                          f.write(chunk)
+
+              print("DOWNLOAD SUCCESS:", filename)
+          PY
+
+          echo "Downloaded files:"
+          ls -lh input/
+
+      - name: Build FFmpeg renderer
+        run: docker build -t india-news-hub-renderer .
+
+      - name: Run real news renderer
+        run: |
+          mkdir -p output
+
+          docker run --rm \
+            -v "${{ github.workspace }}/input:/workspace/input" \
+            -v "${{ github.workspace }}/output:/workspace/output" \
+            --entrypoint /app/render-real.sh \
+            india-news-hub-renderer
+
+          echo "Rendered output:"
+          ls -lh output/
+
+          test -f output/india-news-hub-real-test.mp4
+
       - name: Upload MP4 artifact
         uses: actions/upload-artifact@v4
         with:
           name: india-news-hub-real-video
           path: output/india-news-hub-real-test.mp4
+          if-no-files-found: error
           retention-days: 1
