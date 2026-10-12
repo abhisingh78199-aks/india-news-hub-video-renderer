@@ -1,0 +1,337 @@
+name: India News Hub YouTube Private Upload
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_name:
+        description: "GitHub video artifact name"
+        required: true
+        default: "india-news-hub-real-video"
+      video_title:
+        description: "YouTube video title"
+        required: true
+        default: "India News Hub - Private Upload Test"
+      video_description:
+        description: "YouTube video description"
+        required: true
+        default: "India News Hub private upload pipeline test."
+      video_tags:
+        description: "Comma-separated YouTube tags"
+        required: false
+        default: "India News Hub,India News,Indian News,Latest News India"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  upload-youtube:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout renderer
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --quiet \
+            google-auth \
+            google-api-python-client \
+            google-auth-httplib2
+
+      - name: Download latest rendered video artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: ${{ inputs.artifact_name }}
+        run: |
+          mkdir -p youtube-input
+
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+          import zipfile
+          import io
+
+          artifact_name = os.environ["ARTIFACT_NAME"]
+
+          result = subprocess.run(
+              [
+                  "gh",
+                  "api",
+                  f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/artifacts",
+                  "--paginate",
+                  "--slurp"
+              ],
+              capture_output=True,
+              text=True,
+              check=True
+          )
+
+          pages = json.loads(result.stdout)
+          artifacts = []
+
+          for page in pages:
+              artifacts.extend(page.get("artifacts", []))
+
+          matching = [
+              a for a in artifacts
+              if a.get("name") == artifact_name
+              and not a.get("expired", False)
+          ]
+
+          if not matching:
+              raise SystemExit(
+                  f"Artifact not found or expired: {artifact_name}"
+              )
+
+          matching.sort(
+              key=lambda x: x.get("created_at", ""),
+              reverse=True
+          )
+
+          artifact = matching[0]
+
+          print("ARTIFACT FOUND:", artifact["name"])
+          print("ARTIFACT ID:", artifact["id"])
+          print("CREATED:", artifact["created_at"])
+
+          download_url = artifact["archive_download_url"]
+
+          download = subprocess.run(
+              [
+                  "gh",
+                  "api",
+                  download_url,
+                  "--method",
+                  "GET"
+              ],
+              capture_output=True,
+              check=True
+          )
+
+          with zipfile.ZipFile(io.BytesIO(download.stdout)) as z:
+              z.extractall("youtube-input")
+
+          print("ARTIFACT EXTRACTED")
+
+          PY
+
+          echo "Downloaded files:"
+          find youtube-input -maxdepth 2 -type f -printf '%p\n'
+
+          VIDEO_FILE=$(find youtube-input -type f -name "*.mp4" | head -n 1)
+
+          if [ -z "$VIDEO_FILE" ]; then
+            echo "ERROR: MP4 file not found in artifact."
+            exit 1
+          fi
+
+          echo "VIDEO_FILE=$VIDEO_FILE" >> "$GITHUB_ENV"
+
+      - name: Upload video to YouTube as PRIVATE
+        env:
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          VIDEO_TITLE: ${{ inputs.video_title }}
+          VIDEO_DESCRIPTION: ${{ inputs.video_description }}
+          VIDEO_TAGS: ${{ inputs.video_tags }}
+          VIDEO_FILE: ${{ env.VIDEO_FILE }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import sys
+
+          from google.oauth2.credentials import Credentials
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+
+          client_id = os.environ["YOUTUBE_CLIENT_ID"]
+          client_secret = os.environ["YOUTUBE_CLIENT_SECRET"]
+          refresh_token = os.environ["YOUTUBE_REFRESH_TOKEN"]
+
+          video_file = os.environ["VIDEO_FILE"]
+          title = os.environ["VIDEO_TITLE"].strip()
+          description = os.environ["VIDEO_DESCRIPTION"].strip()
+
+          tags = [
+              x.strip()
+              for x in os.environ["VIDEO_TAGS"].split(",")
+              if x.strip()
+          ]
+
+          if not os.path.isfile(video_file):
+              raise SystemExit("ERROR: Video file not found.")
+
+          if not title:
+              raise SystemExit("ERROR: Video title is empty.")
+
+          credentials = Credentials(
+              token=None,
+              refresh_token=refresh_token,
+              token_uri="https://oauth2.googleapis.com/token",
+              client_id=client_id,
+              client_secret=client_secret,
+              scopes=["https://www.googleapis.com/auth/youtube.upload"]
+          )
+
+          youtube = build(
+              "youtube",
+              "v3",
+              credentials=credentials,
+              cache_discovery=False
+          )
+
+          body = {
+              "snippet": {
+                  "title": title,
+                  "description": description,
+                  "tags": tags,
+                  "categoryId": "25"
+              },
+              "status": {
+                  "privacyStatus": "private",
+                  "selfDeclaredMadeForKids": False,
+                  "publicStatsViewable": True
+              }
+          }
+
+          media = MediaFileUpload(
+              video_file,
+              mimetype="video/mp4",
+              resumable=True
+          )
+
+          request = youtube.videos().insert(
+              part="snippet,status",
+              body=body,
+              media_body=media
+          )
+
+          response = None
+
+          print("Starting YouTube upload...")
+          print("PRIVACY: PRIVATE")
+
+          while response is None:
+              status, response = request.next_chunk()
+
+              if status:
+                  print(
+                      "UPLOAD PROGRESS: {:.1f}%".format(
+                          status.progress() * 100
+                      )
+                  )
+
+          video_id = response.get("id")
+
+          if not video_id:
+              raise SystemExit(
+                  "ERROR: YouTube video ID not returned."
+              )
+
+          print("================================")
+          print("YOUTUBE UPLOAD SUCCESS")
+          print("================================")
+          print("VIDEO ID:", video_id)
+          print("TITLE:", response["snippet"]["title"])
+          print("PRIVACY:", response["status"]["privacyStatus"])
+
+          if response["status"]["privacyStatus"] != "private":
+              raise SystemExit(
+                  "SAFETY ERROR: Video is not PRIVATE."
+              )
+
+          with open("youtube-video-result.txt", "w") as f:
+              f.write("VIDEO_ID=" + video_id + "\n")
+              f.write("TITLE=" + response["snippet"]["title"] + "\n")
+              f.write(
+                  "PRIVACY=" +
+                  response["status"]["privacyStatus"] +
+                  "\n"
+              )
+
+          PY
+
+      - name: Verify YouTube upload
+        env:
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import os
+
+          from google.oauth2.credentials import Credentials
+          from googleapiclient.discovery import build
+
+          video_id = None
+
+          with open("youtube-video-result.txt", "r") as f:
+              for line in f:
+                  if line.startswith("VIDEO_ID="):
+                      video_id = line.strip().split("=", 1)[1]
+
+          if not video_id:
+              raise SystemExit("ERROR: Video ID missing.")
+
+          credentials = Credentials(
+              token=None,
+              refresh_token=os.environ["YOUTUBE_REFRESH_TOKEN"],
+              token_uri="https://oauth2.googleapis.com/token",
+              client_id=os.environ["YOUTUBE_CLIENT_ID"],
+              client_secret=os.environ["YOUTUBE_CLIENT_SECRET"],
+              scopes=["https://www.googleapis.com/auth/youtube.upload"]
+          )
+
+          youtube = build(
+              "youtube",
+              "v3",
+              credentials=credentials,
+              cache_discovery=False
+          )
+
+          result = youtube.videos().list(
+              part="snippet,status,processingDetails",
+              id=video_id
+          ).execute()
+
+          items = result.get("items", [])
+
+          if not items:
+              raise SystemExit(
+                  "ERROR: Uploaded video could not be verified."
+              )
+
+          video = items[0]
+
+          privacy = video["status"].get("privacyStatus")
+          processing = video.get(
+              "processingDetails",
+              {}
+          ).get("processingStatus", "unknown")
+
+          print("================================")
+          print("YOUTUBE UPLOAD VERIFIED")
+          print("================================")
+          print("VIDEO ID:", video_id)
+          print("TITLE:", video["snippet"]["title"])
+          print("PRIVACY:", privacy)
+          print("PROCESSING:", processing)
+
+          if privacy != "private":
+              raise SystemExit(
+                  "SAFETY ERROR: Verification found non-private status."
+              )
+
+          PY
+
+      - name: Upload result record
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-private-upload-result
+          path: youtube-video-result.txt
+          retention-days: 1
+          if-no-files-found: error
