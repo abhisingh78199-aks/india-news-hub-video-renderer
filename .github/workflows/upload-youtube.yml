@@ -127,10 +127,11 @@ jobs:
             echo "ERROR: MP4 file not found in artifact."
             exit 1
           fi
-if [ ! -s "$VIDEO_FILE" ]; then
-  echo "ERROR: MP4 file exists but is empty."
-  exit 1
-fi
+          
+          if [ ! -s "$VIDEO_FILE" ]; then
+          echo "ERROR: MP4 file exists but is empty."
+          exit 1
+          fi
 
           echo "VIDEO_FILE=$VIDEO_FILE" >> "$GITHUB_ENV"
 
