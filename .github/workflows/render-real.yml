@@ -2,6 +2,15 @@ name: India News Hub Real Video Renderer
 
 on:
   workflow_dispatch:
+    inputs:
+      voice_file_id:
+        description: 'Google Drive Voice File ID'
+        required: true
+        type: string
+      render_input_file_id:
+        description: 'Google Drive Render Input File ID'
+        required: true
+        type: string
 
 jobs:
   render-real:
@@ -14,8 +23,8 @@ jobs:
       - name: Download news input and voice
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          NEWS_AUDIO_FILE_ID: ${{ secrets.NEWS_AUDIO_FILE_ID }}
-          NEWS_RENDER_INPUT_FILE_ID: ${{ secrets.NEWS_RENDER_INPUT_FILE_ID }}
+          NEWS_AUDIO_FILE_ID: ${{ inputs.voice_file_id }}
+          NEWS_RENDER_INPUT_FILE_ID: ${{ inputs.render_input_file_id }}
         run: |
           python3 -m pip install --quiet google-auth
 
