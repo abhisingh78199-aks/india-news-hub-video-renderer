@@ -25,6 +25,7 @@ echo "voice.wav found."
 python3 - "$INPUT" <<'PY'
 import json
 import sys
+import textwrap
 
 path = sys.argv[1]
 
@@ -41,25 +42,79 @@ scenes = data.get("scenes", [])
 if len(scenes) < 4:
     raise SystemExit("ERROR: minimum 4 scenes required")
 
-for i, scene in enumerate(scenes[:4], 1):
-    heading = str(scene.get("heading", "")).strip()
-    text = str(scene.get("text", "")).strip()
+generic_headings = {
+    "what happened?",
+    "key details",
+    "why it matters",
+    "what next?",
+    "what happened",
+    "key details",
+    "why it matters",
+    "what next"
+}
 
-    if not heading or not text:
-        raise SystemExit("ERROR: scene data incomplete")
+def clean_text(value):
+    value = str(value or "").strip()
+    value = " ".join(value.split())
+    return value
 
-    with open(f"/workspace/scene{i}_heading.txt", "w", encoding="utf-8") as f:
-        f.write(heading)
+def wrap_text(value, width):
+    value = clean_text(value)
+    return "\n".join(
+        textwrap.wrap(
+            value,
+            width=width,
+            break_long_words=False,
+            break_on_hyphens=False
+        )
+    )
 
-    with open(f"/workspace/scene{i}_text.txt", "w", encoding="utf-8") as f:
-        f.write(text)
+wrapped_title = wrap_text(title, 42)
 
 with open("/workspace/title.txt", "w", encoding="utf-8") as f:
-    f.write(title)
+    f.write(wrapped_title)
+
+for i, scene in enumerate(scenes[:4], 1):
+
+    heading = clean_text(scene.get("heading", ""))
+    text = clean_text(scene.get("text", ""))
+
+    if not text:
+        raise SystemExit(
+            f"ERROR: scene {i} text missing"
+        )
+
+    heading_lower = heading.lower()
+
+    if not heading or heading_lower in generic_headings:
+        heading = f"NEWS UPDATE {i}"
+
+    heading = wrap_text(heading, 34)
+    text = wrap_text(text, 68)
+
+    with open(
+        f"/workspace/scene{i}_heading.txt",
+        "w",
+        encoding="utf-8"
+    ) as f:
+        f.write(heading)
+
+    with open(
+        f"/workspace/scene{i}_text.txt",
+        "w",
+        encoding="utf-8"
+    ) as f:
+        f.write(text)
 
 print("NEWS CONTENT: VALID")
 print("TITLE:", title)
 print("SCENES:", len(scenes))
+
+for i, scene in enumerate(scenes[:4], 1):
+    print(
+        f"SCENE {i}:",
+        clean_text(scene.get("text", ""))[:250]
+    )
 PY
 
 AUDIO_DURATION=$(ffprobe \
@@ -85,7 +140,7 @@ create_scene() {
   ffmpeg -y \
     -f lavfi \
     -i "color=c=$COLOR:s=1280x720:r=30:d=$SCENE_DURATION" \
-    -vf "drawtext=text='INDIA NEWS HUB':fontcolor=white:fontsize=48:x=(w-text_w)/2:y=70,drawtext=textfile=/workspace/scene${NUM}_heading.txt:fontcolor=white:fontsize=54:x=(w-text_w)/2:y=250,drawtext=textfile=/workspace/scene${NUM}_text.txt:fontcolor=white:fontsize=28:x=100:y=370:line_spacing=12" \
+    -vf "drawtext=textfile=/workspace/title.txt:fontcolor=white:fontsize=48:x=(w-text_w)/2:y=55:box=1:boxcolor=black@0.35:boxborderw=18,drawtext=textfile=/workspace/scene${NUM}_heading.txt:fontcolor=white:fontsize=46:x=(w-text_w)/2:y=235:box=1:boxcolor=black@0.30:boxborderw=16,drawtext=textfile=/workspace/scene${NUM}_text.txt:fontcolor=white:fontsize=30:x=90:y=370:line_spacing=14:box=1:boxcolor=black@0.28:boxborderw=20" \
     -c:v libx264 \
     -pix_fmt yuv420p \
     "/workspace/scene${NUM}.mp4"
