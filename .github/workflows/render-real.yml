@@ -20,7 +20,7 @@ jobs:
       - name: Checkout renderer
         uses: actions/checkout@v4
 
-      - name: Download news input, voice and scene visuals
+      - name: Download render input, voice and visual assets
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           NEWS_AUDIO_FILE_ID: ${{ inputs.voice_file_id }}
@@ -29,169 +29,175 @@ jobs:
           python3 -m pip install --quiet google-auth
 
           python3 - <<'PY'
-          import json
-          import os
-          import re
-          import mimetypes
+          import json, os, re
           from pathlib import Path
-          from urllib.parse import urlparse
           from google.oauth2 import service_account
           from google.auth.transport.requests import AuthorizedSession
 
           info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
-
           credentials = service_account.Credentials.from_service_account_info(
               info,
               scopes=["https://www.googleapis.com/auth/drive.readonly"]
           )
-
           session = AuthorizedSession(credentials)
 
-          Path("input").mkdir(exist_ok=True)
-          Path("input/assets").mkdir(exist_ok=True)
+          Path("input/assets").mkdir(parents=True, exist_ok=True)
 
-          def download_drive_file(file_id, output_path):
-              meta_url = (
-                  "https://www.googleapis.com/drive/v3/files/"
-                  + file_id
-                  + "?fields=name,mimeType,size"
+          RENDER_ID = os.environ["NEWS_RENDER_INPUT_FILE_ID"]
+          VOICE_ID = os.environ["NEWS_AUDIO_FILE_ID"]
+          blocked = {RENDER_ID, VOICE_ID}
+
+          def media_url(file_id):
+              return "https://www.googleapis.com/drive/v3/files/" + file_id + "?alt=media"
+
+          def meta(file_id):
+              r = session.get(
+                  "https://www.googleapis.com/drive/v3/files/" + file_id +
+                  "?fields=id,name,mimeType,size"
               )
-              meta = session.get(meta_url)
-              meta.raise_for_status()
-              meta_json = meta.json()
+              if r.status_code != 200:
+                  return None
+              return r.json()
 
-              mime = meta_json.get("mimeType", "")
-              if not mime.startswith("image/"):
+          def download(file_id, path):
+              r = session.get(media_url(file_id), stream=True, timeout=60)
+              if r.status_code != 200:
                   return False
-
-              media_url = (
-                  "https://www.googleapis.com/drive/v3/files/"
-                  + file_id
-                  + "?alt=media"
-              )
-
-              response = session.get(media_url, stream=True)
-              response.raise_for_status()
-
-              with open(output_path, "wb") as f:
-                  for chunk in response.iter_content(chunk_size=1024 * 1024):
+              with open(path, "wb") as f:
+                  for chunk in r.iter_content(chunk_size=1024 * 1024):
                       if chunk:
                           f.write(chunk)
+              return os.path.getsize(path) > 0
 
-              return True
-
-          def download_url(url, output_path):
+          def download_text(file_id):
+              r = session.get(media_url(file_id), timeout=60)
+              if r.status_code != 200:
+                  return None
               try:
-                  response = session.get(url, stream=True, timeout=30)
-                  response.raise_for_status()
-                  content_type = response.headers.get("content-type", "")
-                  if not content_type.startswith("image/"):
-                      return False
-
-                  with open(output_path, "wb") as f:
-                      for chunk in response.iter_content(chunk_size=1024 * 1024):
-                          if chunk:
-                              f.write(chunk)
-
-                  return True
+                  return r.content.decode("utf-8")
               except Exception:
-                  return False
+                  return None
 
-          # Download render input JSON.
-          render_url = (
-              "https://www.googleapis.com/drive/v3/files/"
-              + os.environ["NEWS_RENDER_INPUT_FILE_ID"]
-              + "?alt=media"
-          )
-
-          response = session.get(render_url, stream=True)
-          response.raise_for_status()
-
-          with open("input/news.json", "wb") as f:
-              for chunk in response.iter_content(chunk_size=1024 * 1024):
-                  if chunk:
-                      f.write(chunk)
-
-          # Download voice.
-          voice_url = (
-              "https://www.googleapis.com/drive/v3/files/"
-              + os.environ["NEWS_AUDIO_FILE_ID"]
-              + "?alt=media"
-          )
-
-          response = session.get(voice_url, stream=True)
-          response.raise_for_status()
-
-          with open("input/voice.wav", "wb") as f:
-              for chunk in response.iter_content(chunk_size=1024 * 1024):
-                  if chunk:
-                      f.write(chunk)
+          # Core inputs.
+          if not download(RENDER_ID, "input/news.json"):
+              raise SystemExit("ERROR: render input download failed")
+          if not download(VOICE_ID, "input/voice.wav"):
+              raise SystemExit("ERROR: voice download failed")
 
           with open("input/news.json", encoding="utf-8") as f:
-              data = json.load(f)
+              root = json.load(f)
 
-          # Find scene visual references without depending on one exact JSON key.
-          found = []
+          # Collect every Drive-looking ID anywhere in the render package.
+          # We intentionally do not depend on one specific JSON key name.
+          drive_id_re = re.compile(r"^[A-Za-z0-9_-]{25,60}$")
+          url_re = re.compile(r"^https?://")
+          candidates = []
+          urls = []
 
           def walk(obj):
               if isinstance(obj, dict):
-                  for key, value in obj.items():
-                      key_l = str(key).lower()
-                      if isinstance(value, str):
-                          if re.fullmatch(r"[A-Za-z0-9_-]{25,50}", value):
-                              if any(x in key_l for x in [
-                                  "image", "visual", "asset", "media", "file"
-                              ]):
-                                  found.append(("drive", value))
-                          elif value.startswith("http://") or value.startswith("https://"):
-                              if any(x in key_l for x in [
-                                  "image", "visual", "asset", "media", "url"
-                              ]):
-                                  found.append(("url", value))
+                  for value in obj.values():
                       walk(value)
               elif isinstance(obj, list):
-                  for item in obj:
-                      walk(item)
+                  for value in obj:
+                      walk(value)
+              elif isinstance(obj, str):
+                  value = obj.strip()
+                  if value in blocked:
+                      return
+                  if drive_id_re.fullmatch(value):
+                      candidates.append(value)
+                  elif url_re.match(value):
+                      urls.append(value)
 
-          walk(data)
+          walk(root)
 
-          # Keep order and remove duplicates.
-          unique = []
+          # Some render packages contain a manifest/package file ID rather than
+          # the four image IDs directly. Expand JSON-like Drive files recursively.
+          expanded = set()
+          queue = []
+          for cid in candidates:
+              queue.append(cid)
+
+          while queue and len(expanded) < 30:
+              fid = queue.pop(0)
+              if fid in expanded or fid in blocked:
+                  continue
+              expanded.add(fid)
+              m = meta(fid)
+              if not m:
+                  continue
+              mime = m.get("mimeType", "")
+              name = (m.get("name") or "").lower()
+
+              if mime.startswith("image/"):
+                  candidates.append(fid)
+                  continue
+
+              if mime in ("application/json", "text/plain") or name.endswith((".json", ".txt")):
+                  txt = download_text(fid)
+                  if txt:
+                      try:
+                          obj = json.loads(txt)
+                          before = len(candidates)
+                          walk(obj)
+                          queue.extend(candidates[before:])
+                      except Exception:
+                          pass
+
+          # De-duplicate while preserving order.
+          ordered = []
           seen = set()
-          for item in found:
-              if item[1] not in seen:
-                  seen.add(item[1])
-                  unique.append(item)
+          for fid in candidates:
+              if fid not in seen and fid not in blocked:
+                  seen.add(fid)
+                  ordered.append(fid)
 
           downloaded = 0
-
-          for kind, ref in unique:
+          for fid in ordered:
               if downloaded >= 4:
                   break
-
-              scene_number = downloaded + 1
-
-              if kind == "drive":
-                  ok = download_drive_file(
-                      ref,
-                      f"input/assets/scene{scene_number}.jpg"
-                  )
-              else:
-                  ok = download_url(
-                      ref,
-                      f"input/assets/scene{scene_number}.jpg"
-                  )
-
-              if ok:
+              m = meta(fid)
+              if not m or not m.get("mimeType", "").startswith("image/"):
+                  continue
+              ext = {
+                  "image/jpeg": ".jpg",
+                  "image/png": ".png",
+                  "image/webp": ".webp"
+              }.get(m.get("mimeType"), ".jpg")
+              out = f"input/assets/scene{downloaded+1}{ext}"
+              if download(fid, out):
                   downloaded += 1
-                  print("VISUAL DOWNLOAD SUCCESS:", scene_number, ref)
+                  print("VISUAL DOWNLOAD SUCCESS:", downloaded, fid, m.get("name"))
 
-          print("SCENE VISUALS DOWNLOADED:", downloaded)
-          print("Downloaded files:")
+          # If no Drive image was found, try direct image URLs embedded in the package.
+          if downloaded < 4:
+              import urllib.request
+              for url in urls:
+                  if downloaded >= 4:
+                      break
+                  try:
+                      req = urllib.request.Request(url, headers={"User-Agent":"IndiaNewsHub/1.0"})
+                      with urllib.request.urlopen(req, timeout=30) as r:
+                          data = r.read()
+                      ctype = (r.headers.get("Content-Type") or "").split(";")[0]
+                      if not ctype.startswith("image/"):
+                          continue
+                      ext = ".png" if ctype == "image/png" else ".jpg"
+                      out = f"input/assets/scene{downloaded+1}{ext}"
+                      with open(out, "wb") as f:
+                          f.write(data)
+                      if os.path.getsize(out) > 0:
+                          downloaded += 1
+                          print("VISUAL URL DOWNLOAD SUCCESS:", downloaded, url)
+                  except Exception:
+                      pass
+
+          print("TOTAL VISUALS READY:", downloaded)
           PY
 
-          echo "Downloaded input files:"
-          find input -maxdepth 2 -type f -printf '%p %s bytes\n'
+          echo "Input/asset files:"
+          find input -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
 
       - name: Build FFmpeg renderer
         run: docker build -t india-news-hub-renderer .
@@ -208,7 +214,6 @@ jobs:
 
           echo "Rendered output:"
           ls -lh output/
-
           test -s output/india-news-hub-real-test.mp4
 
       - name: Upload MP4 artifact
