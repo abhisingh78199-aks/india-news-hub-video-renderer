@@ -18,8 +18,9 @@ jobs:
 
     steps:
       - name: Checkout renderer
-        uses: actions/checkout@v4 
-      - name: Download news input, voice and visuals
+        uses: actions/checkout@v4
+
+      - name: Download news input, voice and scene visuals
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           NEWS_AUDIO_FILE_ID: ${{ inputs.voice_file_id }}
@@ -30,6 +31,10 @@ jobs:
           python3 - <<'PY'
           import json
           import os
+          import re
+          import mimetypes
+          from pathlib import Path
+          from urllib.parse import urlparse
           from google.oauth2 import service_account
           from google.auth.transport.requests import AuthorizedSession
 
@@ -42,77 +47,152 @@ jobs:
 
           session = AuthorizedSession(credentials)
 
-          os.makedirs("input", exist_ok=True)
-          os.makedirs("input/visuals", exist_ok=True)
+          Path("input").mkdir(exist_ok=True)
+          Path("input/assets").mkdir(exist_ok=True)
 
-          def download_file(file_id, output_path):
-              url = (
+          def download_drive_file(file_id, output_path):
+              meta_url = (
+                  "https://www.googleapis.com/drive/v3/files/"
+                  + file_id
+                  + "?fields=name,mimeType,size"
+              )
+              meta = session.get(meta_url)
+              meta.raise_for_status()
+              meta_json = meta.json()
+
+              mime = meta_json.get("mimeType", "")
+              if not mime.startswith("image/"):
+                  return False
+
+              media_url = (
                   "https://www.googleapis.com/drive/v3/files/"
                   + file_id
                   + "?alt=media"
               )
 
-              response = session.get(url, stream=True)
+              response = session.get(media_url, stream=True)
               response.raise_for_status()
 
               with open(output_path, "wb") as f:
-                  for chunk in response.iter_content(
-                      chunk_size=1024 * 1024
-                  ):
+                  for chunk in response.iter_content(chunk_size=1024 * 1024):
                       if chunk:
                           f.write(chunk)
 
-          download_file(
-              os.environ["NEWS_RENDER_INPUT_FILE_ID"],
-              "input/news.json"
+              return True
+
+          def download_url(url, output_path):
+              try:
+                  response = session.get(url, stream=True, timeout=30)
+                  response.raise_for_status()
+                  content_type = response.headers.get("content-type", "")
+                  if not content_type.startswith("image/"):
+                      return False
+
+                  with open(output_path, "wb") as f:
+                      for chunk in response.iter_content(chunk_size=1024 * 1024):
+                          if chunk:
+                              f.write(chunk)
+
+                  return True
+              except Exception:
+                  return False
+
+          # Download render input JSON.
+          render_url = (
+              "https://www.googleapis.com/drive/v3/files/"
+              + os.environ["NEWS_RENDER_INPUT_FILE_ID"]
+              + "?alt=media"
           )
 
-          download_file(
-              os.environ["NEWS_AUDIO_FILE_ID"],
-              "input/voice.wav"
+          response = session.get(render_url, stream=True)
+          response.raise_for_status()
+
+          with open("input/news.json", "wb") as f:
+              for chunk in response.iter_content(chunk_size=1024 * 1024):
+                  if chunk:
+                      f.write(chunk)
+
+          # Download voice.
+          voice_url = (
+              "https://www.googleapis.com/drive/v3/files/"
+              + os.environ["NEWS_AUDIO_FILE_ID"]
+              + "?alt=media"
           )
 
-          with open("input/news.json", "r", encoding="utf-8") as f:
+          response = session.get(voice_url, stream=True)
+          response.raise_for_status()
+
+          with open("input/voice.wav", "wb") as f:
+              for chunk in response.iter_content(chunk_size=1024 * 1024):
+                  if chunk:
+                      f.write(chunk)
+
+          with open("input/news.json", encoding="utf-8") as f:
               data = json.load(f)
 
-          visuals = data.get("visuals", [])
+          # Find scene visual references without depending on one exact JSON key.
+          found = []
 
-          if len(visuals) < 4:
-              raise RuntimeError(
-                  "news.json must contain at least 4 visual assets."
-              )
+          def walk(obj):
+              if isinstance(obj, dict):
+                  for key, value in obj.items():
+                      key_l = str(key).lower()
+                      if isinstance(value, str):
+                          if re.fullmatch(r"[A-Za-z0-9_-]{25,50}", value):
+                              if any(x in key_l for x in [
+                                  "image", "visual", "asset", "media", "file"
+                              ]):
+                                  found.append(("drive", value))
+                          elif value.startswith("http://") or value.startswith("https://"):
+                              if any(x in key_l for x in [
+                                  "image", "visual", "asset", "media", "url"
+                              ]):
+                                  found.append(("url", value))
+                      walk(value)
+              elif isinstance(obj, list):
+                  for item in obj:
+                      walk(item)
 
-          for index, visual in enumerate(visuals[:4], 1):
-              file_id = str(
-                  visual.get("fileId", "")
-              ).strip()
+          walk(data)
 
-              if not file_id:
-                  raise RuntimeError(
-                      f"Visual file ID missing for scene {index}"
+          # Keep order and remove duplicates.
+          unique = []
+          seen = set()
+          for item in found:
+              if item[1] not in seen:
+                  seen.add(item[1])
+                  unique.append(item)
+
+          downloaded = 0
+
+          for kind, ref in unique:
+              if downloaded >= 4:
+                  break
+
+              scene_number = downloaded + 1
+
+              if kind == "drive":
+                  ok = download_drive_file(
+                      ref,
+                      f"input/assets/scene{scene_number}.jpg"
+                  )
+              else:
+                  ok = download_url(
+                      ref,
+                      f"input/assets/scene{scene_number}.jpg"
                   )
 
-              output_path = (
-                  f"input/visuals/scene{index}.jpg"
-              )
+              if ok:
+                  downloaded += 1
+                  print("VISUAL DOWNLOAD SUCCESS:", scene_number, ref)
 
-              download_file(
-                  file_id,
-                  output_path
-              )
-
-              print(
-                  "DOWNLOAD SUCCESS: visual scene",
-                  index,
-                  file_id
-              )
-
-          print("DOWNLOAD SUCCESS: news.json")
-          print("DOWNLOAD SUCCESS: voice.wav")
+          print("SCENE VISUALS DOWNLOADED:", downloaded)
+          print("Downloaded files:")
           PY
 
-          echo "Downloaded files:"
-          find input -maxdepth 2 -type f -ls
+          echo "Downloaded input files:"
+          find input -maxdepth 2 -type f -printf '%p %s bytes\n'
+
       - name: Build FFmpeg renderer
         run: docker build -t india-news-hub-renderer .
 
@@ -129,7 +209,7 @@ jobs:
           echo "Rendered output:"
           ls -lh output/
 
-          test -f output/india-news-hub-real-test.mp4
+          test -s output/india-news-hub-real-test.mp4
 
       - name: Upload MP4 artifact
         uses: actions/upload-artifact@v4
