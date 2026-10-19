@@ -18,9 +18,8 @@ jobs:
 
     steps:
       - name: Checkout renderer
-        uses: actions/checkout@v4
-
-      - name: Download news input and voice
+        uses: actions/checkout@v4 
+      - name: Download news input, voice and visuals
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           NEWS_AUDIO_FILE_ID: ${{ inputs.voice_file_id }}
@@ -44,29 +43,76 @@ jobs:
           session = AuthorizedSession(credentials)
 
           os.makedirs("input", exist_ok=True)
+          os.makedirs("input/visuals", exist_ok=True)
 
-          files = {
-              "news.json": os.environ["NEWS_RENDER_INPUT_FILE_ID"],
-              "voice.wav": os.environ["NEWS_AUDIO_FILE_ID"]
-          }
-
-          for filename, file_id in files.items():
-              url = "https://www.googleapis.com/drive/v3/files/" + file_id + "?alt=media"
+          def download_file(file_id, output_path):
+              url = (
+                  "https://www.googleapis.com/drive/v3/files/"
+                  + file_id
+                  + "?alt=media"
+              )
 
               response = session.get(url, stream=True)
               response.raise_for_status()
 
-              with open("input/" + filename, "wb") as f:
-                  for chunk in response.iter_content(chunk_size=1024 * 1024):
+              with open(output_path, "wb") as f:
+                  for chunk in response.iter_content(
+                      chunk_size=1024 * 1024
+                  ):
                       if chunk:
                           f.write(chunk)
 
-              print("DOWNLOAD SUCCESS:", filename)
+          download_file(
+              os.environ["NEWS_RENDER_INPUT_FILE_ID"],
+              "input/news.json"
+          )
+
+          download_file(
+              os.environ["NEWS_AUDIO_FILE_ID"],
+              "input/voice.wav"
+          )
+
+          with open("input/news.json", "r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          visuals = data.get("visuals", [])
+
+          if len(visuals) < 4:
+              raise RuntimeError(
+                  "news.json must contain at least 4 visual assets."
+              )
+
+          for index, visual in enumerate(visuals[:4], 1):
+              file_id = str(
+                  visual.get("fileId", "")
+              ).strip()
+
+              if not file_id:
+                  raise RuntimeError(
+                      f"Visual file ID missing for scene {index}"
+                  )
+
+              output_path = (
+                  f"input/visuals/scene{index}.jpg"
+              )
+
+              download_file(
+                  file_id,
+                  output_path
+              )
+
+              print(
+                  "DOWNLOAD SUCCESS: visual scene",
+                  index,
+                  file_id
+              )
+
+          print("DOWNLOAD SUCCESS: news.json")
+          print("DOWNLOAD SUCCESS: voice.wav")
           PY
 
           echo "Downloaded files:"
-          ls -lh input/
-
+          find input -maxdepth 2 -type f -ls
       - name: Build FFmpeg renderer
         run: docker build -t india-news-hub-renderer .
 
