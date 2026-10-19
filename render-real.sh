@@ -1,11 +1,12 @@
 #!/bin/bash
 set -e
 
-echo "India News Hub - Animated News Renderer"
+echo "India News Hub - Visual News Renderer"
 
 INPUT="/workspace/input/news.json"
 VOICE="/workspace/input/voice.wav"
 OUTPUT="/workspace/output/india-news-hub-real-test.mp4"
+VISUAL_DIR="/workspace/input/visuals"
 
 mkdir -p /workspace/output
 
@@ -19,37 +20,55 @@ if [ ! -s "$VOICE" ]; then
   exit 1
 fi
 
-python3 - "$INPUT" <<'PY'
+if [ ! -d "$VISUAL_DIR" ]; then
+  echo "ERROR: visuals directory missing"
+  exit 1
+fi
+
+python3 - "$INPUT" "$VISUAL_DIR" <<'PY'
 import json
+import os
+import re
 import sys
 import textwrap
-import re
 
 path = sys.argv[1]
+visual_dir = sys.argv[2]
 
 with open(path, "r", encoding="utf-8") as f:
     data = json.load(f)
 
-title = " ".join(str(data.get("title", "")).split()).strip()
+title = " ".join(
+    str(data.get("title", "")).split()
+).strip()
+
+scenes = data.get("scenes", [])
+visuals = data.get("visuals", [])
 
 if not title:
     raise SystemExit("ERROR: title missing")
 
-scenes = data.get("scenes", [])
-
 if len(scenes) < 4:
-    raise SystemExit("ERROR: minimum 4 scenes required")
+    raise SystemExit(
+        "ERROR: minimum 4 scenes required"
+    )
+
+if len(visuals) < 4:
+    raise SystemExit(
+        "ERROR: minimum 4 visual assets required"
+    )
 
 def clean(value):
     value = str(value or "")
+
     value = re.sub(
         r'\b(HOOK|WHAT HAPPENED|WHY IT MATTERS|WHAT NEXT|SOURCES|CONCLUSION)\s*:\s*',
         '',
         value,
         flags=re.I
     )
-    value = " ".join(value.split())
-    return value.strip()
+
+    return " ".join(value.split()).strip()
 
 def wrap(value, width):
     return "\n".join(
@@ -61,16 +80,31 @@ def wrap(value, width):
         )
     )
 
-with open("/workspace/title.txt", "w", encoding="utf-8") as f:
-    f.write(wrap(title, 38))
+with open(
+    "/workspace/title.txt",
+    "w",
+    encoding="utf-8"
+) as f:
+    f.write(
+        wrap(title, 48)
+    )
 
-for i, scene in enumerate(scenes[:4], 1):
+for i, scene in enumerate(
+    scenes[:4],
+    1
+):
+    heading = clean(
+        scene.get("heading", "")
+    )
 
-    heading = clean(scene.get("heading", ""))
-    text = clean(scene.get("text", ""))
+    text = clean(
+        scene.get("text", "")
+    )
 
     if not text:
-        raise SystemExit(f"ERROR: scene {i} text missing")
+        raise SystemExit(
+            f"ERROR: scene {i} text missing"
+        )
 
     if not heading:
         heading = f"NEWS {i}"
@@ -85,23 +119,50 @@ for i, scene in enumerate(scenes[:4], 1):
     if not heading:
         heading = f"NEWS {i}"
 
+    caption = text[:150].rsplit(
+        " ",
+        1
+    )[0]
+
+    if len(text) > 150:
+        caption += "..."
+
     with open(
         f"/workspace/scene{i}_heading.txt",
         "w",
         encoding="utf-8"
     ) as f:
-        f.write(wrap(heading, 30))
+        f.write(
+            wrap(heading, 32)
+        )
 
     with open(
-        f"/workspace/scene{i}_text.txt",
+        f"/workspace/scene{i}_caption.txt",
         "w",
         encoding="utf-8"
     ) as f:
-        f.write(wrap(text, 62))
+        f.write(
+            wrap(caption, 58)
+        )
 
-print("NEWS CONTENT: VALID")
+for i in range(1, 5):
+    filename = os.path.join(
+        visual_dir,
+        f"scene{i}.jpg"
+    )
+
+    if (
+        not os.path.isfile(filename)
+        or os.path.getsize(filename) == 0
+    ):
+        raise SystemExit(
+            f"ERROR: visual asset missing for scene {i}"
+        )
+
+print("VISUAL NEWS CONTENT: VALID")
 print("TITLE:", title)
 print("SCENES:", len(scenes))
+print("VISUALS:", len(visuals))
 PY
 
 AUDIO_DURATION=$(ffprobe \
@@ -115,7 +176,9 @@ if [ -z "$AUDIO_DURATION" ]; then
   exit 1
 fi
 
-SCENE_DURATION=$(awk "BEGIN {print $AUDIO_DURATION/4}")
+SCENE_DURATION=$(awk \
+  "BEGIN {print $AUDIO_DURATION/4}"
+)
 
 echo "AUDIO DURATION: $AUDIO_DURATION"
 echo "SCENE DURATION: $SCENE_DURATION"
@@ -123,68 +186,78 @@ echo "SCENE DURATION: $SCENE_DURATION"
 create_scene() {
 
   NUM="$1"
-  BG="$2"
+
+  IMAGE="$VISUAL_DIR/scene${NUM}.jpg"
+
+  OUTPUT_SCENE="/workspace/scene${NUM}.mp4"
 
   ffmpeg -y \
-    -f lavfi \
-    -i "color=c=$BG:s=1280x720:r=30:d=$SCENE_DURATION" \
+    -loop 1 \
+    -i "$IMAGE" \
+    -t "$SCENE_DURATION" \
     -vf "
+      scale=1920:1080:force_original_aspect_ratio=increase,
+      crop=1920:1080,
+      zoompan=z='min(zoom+0.0008,1.12)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=1280x720:fps=30,
+      drawbox=x=0:y=0:w=1280:h=720:color=black@0.10:t=fill,
+      drawbox=x=0:y=0:w=1280:h=88:color=black@0.55:t=fill,
+      drawbox=x=0:y=535:w=1280:h=185:color=black@0.70:t=fill,
       drawbox=x='mod(t*180\,1500)-180':y=0:w=420:h=720:color=white@0.035:t=fill,
-      drawbox=x='1280-mod(t*120\,1500)':y=0:w=280:h=720:color=white@0.025:t=fill,
-      drawbox=x=0:y=0:w=1280:h=8:color=white@0.75:t=fill,
-      drawbox=x=0:y=712:w='1280*t/$SCENE_DURATION':h=8:color=white@0.9:t=fill,
+      drawbox=x=0:y=0:w=1280:h=5:color=white@0.80:t=fill,
+      drawbox=x=0:y=715:w='1280*t/$SCENE_DURATION':h=5:color=white@0.90:t=fill,
 
       drawtext=text='INDIA NEWS HUB':
-        fontcolor=white@0.78:
-        fontsize=24:
-        x=55:
-        y=35,
+        fontcolor=white@0.92:
+        fontsize=22:
+        x=45:
+        y=25,
+
+      drawtext=text='AI-GENERATED ILLUSTRATIVE VISUAL':
+        fontcolor=white@0.60:
+        fontsize=17:
+        x=45:
+        y=58,
 
       drawtext=text='0$NUM':
-        fontcolor=white@0.28:
-        fontsize=110:
-        x=1120:
-        y=55,
+        fontcolor=white@0.65:
+        fontsize=34:
+        x=1190:
+        y=25,
 
       drawtext=textfile=/workspace/title.txt:
         fontcolor=white:
-        fontsize=42:
-        x=70:
+        fontsize=30:
+        x=45:
         y=105:
-        line_spacing=8:
-        box=1:
-        boxcolor=black@0.22:
-        boxborderw=14,
+        line_spacing=6,
 
       drawtext=textfile=/workspace/scene${NUM}_heading.txt:
         fontcolor=white:
-        fontsize=38:
-        x=70:
-        y=275:
-        box=1:
-        boxcolor=black@0.32:
-        boxborderw=14,
+        fontsize=34:
+        x=55:
+        y=555,
 
-      drawtext=textfile=/workspace/scene${NUM}_text.txt:
-        fontcolor=white@0.94:
-        fontsize=30:
-        x=70:
-        y=365:
-        line_spacing=15:
-        box=1:
-        boxcolor=black@0.30:
-        boxborderw=18
+      drawtext=textfile=/workspace/scene${NUM}_caption.txt:
+        fontcolor=white@0.92:
+        fontsize=23:
+        x=55:
+        y=625:
+        line_spacing=8,
+
+      fade=t=in:st=0:d=0.5,
+      fade=t=out:st=$(awk "BEGIN {print $SCENE_DURATION-0.5}"):d=0.5
     " \
+    -an \
     -c:v libx264 \
     -preset veryfast \
     -pix_fmt yuv420p \
-    "/workspace/scene${NUM}.mp4"
+    "$OUTPUT_SCENE"
 }
 
-create_scene 1 0x102A43
-create_scene 2 0x173F5F
-create_scene 3 0x24566F
-create_scene 4 0x315C72
+create_scene 1
+create_scene 2
+create_scene 3
+create_scene 4
 
 printf \
 "file '/workspace/scene1.mp4'\nfile '/workspace/scene2.mp4'\nfile '/workspace/scene3.mp4'\nfile '/workspace/scene4.mp4'\n" \
@@ -214,7 +287,7 @@ if [ ! -s "$OUTPUT" ]; then
 fi
 
 echo "================================"
-echo "ANIMATED NEWS VIDEO CREATED"
+echo "VISUAL NEWS VIDEO CREATED"
 echo "================================"
 
-ls -lh /workspace/output/
+ls -lh "$OUTPUT"
