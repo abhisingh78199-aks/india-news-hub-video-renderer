@@ -7,6 +7,7 @@ on:
         description: 'Google Drive Voice File ID'
         required: true
         type: string
+
       render_input_file_id:
         description: 'Google Drive Render Input File ID'
         required: true
@@ -17,193 +18,738 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout renderer
         uses: actions/checkout@v4
 
-      - name: Download render input, voice and visual assets
+      - name: Download render input, voice and scene-matched visual assets
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           NEWS_AUDIO_FILE_ID: ${{ inputs.voice_file_id }}
           NEWS_RENDER_INPUT_FILE_ID: ${{ inputs.render_input_file_id }}
+
         run: |
+
           python3 -m pip install --quiet google-auth
 
           python3 - <<'PY'
-          import json, os, re
+
+          import json
+          import os
+          import re
+          import urllib.request
           from pathlib import Path
+
           from google.oauth2 import service_account
           from google.auth.transport.requests import AuthorizedSession
 
-          info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
+
+          info = json.loads(
+              os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
+          )
+
           credentials = service_account.Credentials.from_service_account_info(
               info,
-              scopes=["https://www.googleapis.com/auth/drive.readonly"]
+              scopes=[
+                  "https://www.googleapis.com/auth/drive.readonly"
+              ]
           )
+
           session = AuthorizedSession(credentials)
 
-          Path("input/assets").mkdir(parents=True, exist_ok=True)
+          Path("input/assets").mkdir(
+              parents=True,
+              exist_ok=True
+          )
+
 
           RENDER_ID = os.environ["NEWS_RENDER_INPUT_FILE_ID"]
           VOICE_ID = os.environ["NEWS_AUDIO_FILE_ID"]
-          blocked = {RENDER_ID, VOICE_ID}
+
+          blocked = {
+              RENDER_ID,
+              VOICE_ID
+          }
+
+
+          drive_id_re = re.compile(
+              r"^[A-Za-z0-9_-]{25,60}$"
+          )
+
+          url_re = re.compile(
+              r"^https?://"
+          )
+
 
           def media_url(file_id):
-              return "https://www.googleapis.com/drive/v3/files/" + file_id + "?alt=media"
+
+              return (
+                  "https://www.googleapis.com/drive/v3/files/"
+                  + file_id
+                  + "?alt=media"
+              )
+
 
           def meta(file_id):
-              r = session.get(
-                  "https://www.googleapis.com/drive/v3/files/" + file_id +
-                  "?fields=id,name,mimeType,size"
-              )
-              if r.status_code != 200:
+
+              try:
+
+                  r = session.get(
+                      "https://www.googleapis.com/drive/v3/files/"
+                      + file_id
+                      + "?fields=id,name,mimeType,size",
+                      timeout=30
+                  )
+
+                  if r.status_code != 200:
+                      return None
+
+                  return r.json()
+
+              except Exception:
+
                   return None
-              return r.json()
+
 
           def download(file_id, path):
-              r = session.get(media_url(file_id), stream=True, timeout=60)
-              if r.status_code != 200:
+
+              try:
+
+                  r = session.get(
+                      media_url(file_id),
+                      stream=True,
+                      timeout=60
+                  )
+
+                  if r.status_code != 200:
+                      return False
+
+                  with open(path, "wb") as f:
+
+                      for chunk in r.iter_content(
+                          chunk_size=1024 * 1024
+                      ):
+
+                          if chunk:
+                              f.write(chunk)
+
+                  return os.path.getsize(path) > 0
+
+              except Exception:
+
                   return False
-              with open(path, "wb") as f:
-                  for chunk in r.iter_content(chunk_size=1024 * 1024):
-                      if chunk:
-                          f.write(chunk)
-              return os.path.getsize(path) > 0
+
 
           def download_text(file_id):
-              r = session.get(media_url(file_id), timeout=60)
-              if r.status_code != 200:
-                  return None
+
               try:
+
+                  r = session.get(
+                      media_url(file_id),
+                      timeout=60
+                  )
+
+                  if r.status_code != 200:
+                      return None
+
                   return r.content.decode("utf-8")
+
               except Exception:
+
                   return None
 
-          # Core inputs.
-          if not download(RENDER_ID, "input/news.json"):
-              raise SystemExit("ERROR: render input download failed")
-          if not download(VOICE_ID, "input/voice.wav"):
-              raise SystemExit("ERROR: voice download failed")
 
-          with open("input/news.json", encoding="utf-8") as f:
+          # --------------------------------------------------
+          # CORE INPUTS
+          # --------------------------------------------------
+
+          if not download(
+              RENDER_ID,
+              "input/news.json"
+          ):
+
+              raise SystemExit(
+                  "ERROR: render input download failed"
+              )
+
+
+          if not download(
+              VOICE_ID,
+              "input/voice.wav"
+          ):
+
+              raise SystemExit(
+                  "ERROR: voice download failed"
+              )
+
+
+          with open(
+              "input/news.json",
+              encoding="utf-8"
+          ) as f:
+
               root = json.load(f)
 
-          # Collect every Drive-looking ID anywhere in the render package.
-          # We intentionally do not depend on one specific JSON key name.
-          drive_id_re = re.compile(r"^[A-Za-z0-9_-]{25,60}$")
-          url_re = re.compile(r"^https?://")
-          candidates = []
-          urls = []
 
-          def walk(obj):
-              if isinstance(obj, dict):
-                  for value in obj.values():
-                      walk(value)
-              elif isinstance(obj, list):
-                  for value in obj:
-                      walk(value)
-              elif isinstance(obj, str):
-                  value = obj.strip()
-                  if value in blocked:
-                      return
-                  if drive_id_re.fullmatch(value):
-                      candidates.append(value)
-                  elif url_re.match(value):
-                      urls.append(value)
+          scenes = root.get("scenes") or []
 
-          walk(root)
 
-          # Some render packages contain a manifest/package file ID rather than
-          # the four image IDs directly. Expand JSON-like Drive files recursively.
+          if len(scenes) < 4:
+
+              raise SystemExit(
+                  "ERROR: minimum 4 scenes required"
+              )
+
+
+          # --------------------------------------------------
+          # HELPERS
+          # --------------------------------------------------
+
+          def find_media(obj):
+
+              ids = []
+              urls = []
+
+              def walk(value):
+
+                  if isinstance(value, dict):
+
+                      for v in value.values():
+                          walk(v)
+
+                  elif isinstance(value, list):
+
+                      for v in value:
+                          walk(v)
+
+                  elif isinstance(value, str):
+
+                      value = value.strip()
+
+                      if value in blocked:
+                          return
+
+                      if drive_id_re.fullmatch(value):
+
+                          ids.append(value)
+
+                      elif url_re.match(value):
+
+                          urls.append(value)
+
+              walk(obj)
+
+              return ids, urls
+
+
+          # --------------------------------------------------
+          # GLOBAL ASSET POOL
+          # --------------------------------------------------
+
+          global_ids = []
+          global_urls = []
+
+
+          ids, urls = find_media(root)
+
+          global_ids.extend(ids)
+          global_urls.extend(urls)
+
+
+          # --------------------------------------------------
+          # EXPAND JSON / MANIFEST DRIVE FILES
+          # --------------------------------------------------
+
           expanded = set()
-          queue = []
-          for cid in candidates:
-              queue.append(cid)
 
-          while queue and len(expanded) < 30:
+          queue = list(global_ids)
+
+
+          while queue and len(expanded) < 50:
+
               fid = queue.pop(0)
-              if fid in expanded or fid in blocked:
+
+              if fid in expanded:
                   continue
+
+              if fid in blocked:
+                  continue
+
               expanded.add(fid)
+
               m = meta(fid)
+
               if not m:
                   continue
+
               mime = m.get("mimeType", "")
               name = (m.get("name") or "").lower()
 
+
               if mime.startswith("image/"):
-                  candidates.append(fid)
                   continue
 
-              if mime in ("application/json", "text/plain") or name.endswith((".json", ".txt")):
+
+              if (
+                  mime in (
+                      "application/json",
+                      "text/plain"
+                  )
+                  or name.endswith(
+                      (".json", ".txt")
+                  )
+              ):
+
                   txt = download_text(fid)
-                  if txt:
-                      try:
-                          obj = json.loads(txt)
-                          before = len(candidates)
-                          walk(obj)
-                          queue.extend(candidates[before:])
-                      except Exception:
-                          pass
 
-          # De-duplicate while preserving order.
-          ordered = []
-          seen = set()
-          for fid in candidates:
-              if fid not in seen and fid not in blocked:
-                  seen.add(fid)
-                  ordered.append(fid)
+                  if not txt:
+                      continue
 
-          downloaded = 0
-          for fid in ordered:
-              if downloaded >= 4:
-                  break
-              m = meta(fid)
-              if not m or not m.get("mimeType", "").startswith("image/"):
+                  try:
+
+                      obj = json.loads(txt)
+
+                      new_ids, new_urls = find_media(obj)
+
+                      for new_id in new_ids:
+
+                          if new_id not in global_ids:
+                              global_ids.append(new_id)
+                              queue.append(new_id)
+
+                      for new_url in new_urls:
+
+                          if new_url not in global_urls:
+                              global_urls.append(new_url)
+
+                  except Exception:
+
+                      pass
+
+
+          # --------------------------------------------------
+          # UNIQUE GLOBAL DRIVE IMAGES
+          # --------------------------------------------------
+
+          global_image_ids = []
+
+          seen_global = set()
+
+
+          for fid in global_ids:
+
+              if fid in seen_global:
                   continue
+
+              seen_global.add(fid)
+
+              m = meta(fid)
+
+              if not m:
+                  continue
+
+              if m.get(
+                  "mimeType",
+                  ""
+              ).startswith("image/"):
+
+                  global_image_ids.append(fid)
+
+
+          print(
+              "GLOBAL IMAGE CANDIDATES:",
+              len(global_image_ids)
+          )
+
+
+          # --------------------------------------------------
+          # DOWNLOAD ONE SCENE
+          # --------------------------------------------------
+
+          used_ids = set()
+          used_urls = set()
+
+
+          def save_drive_image(
+              fid,
+              scene_number
+          ):
+
+              if fid in used_ids:
+                  return False
+
+              m = meta(fid)
+
+              if not m:
+                  return False
+
+              mime = m.get(
+                  "mimeType",
+                  ""
+              )
+
+              if not mime.startswith("image/"):
+                  return False
+
+
               ext = {
                   "image/jpeg": ".jpg",
                   "image/png": ".png",
                   "image/webp": ".webp"
-              }.get(m.get("mimeType"), ".jpg")
-              out = f"input/assets/scene{downloaded+1}{ext}"
-              if download(fid, out):
-                  downloaded += 1
-                  print("VISUAL DOWNLOAD SUCCESS:", downloaded, fid, m.get("name"))
+              }.get(
+                  mime,
+                  ".jpg"
+              )
 
-          # If no Drive image was found, try direct image URLs embedded in the package.
-          if downloaded < 4:
-              import urllib.request
-              for url in urls:
-                  if downloaded >= 4:
+
+              output = (
+                  f"input/assets/scene"
+                  f"{scene_number}{ext}"
+              )
+
+
+              if download(fid, output):
+
+                  used_ids.add(fid)
+
+                  print(
+                      "SCENE",
+                      scene_number,
+                      "VISUAL SUCCESS:",
+                      fid,
+                      m.get("name")
+                  )
+
+                  return True
+
+              return False
+
+
+          def save_url_image(
+              url,
+              scene_number
+          ):
+
+              if url in used_urls:
+                  return False
+
+              try:
+
+                  request = urllib.request.Request(
+                      url,
+                      headers={
+                          "User-Agent":
+                          "IndiaNewsHub/1.0"
+                      }
+                  )
+
+                  with urllib.request.urlopen(
+                      request,
+                      timeout=30
+                  ) as response:
+
+                      data = response.read()
+
+                      content_type = (
+                          response.headers.get(
+                              "Content-Type"
+                          ) or ""
+                      ).split(";")[0]
+
+
+                  if not content_type.startswith(
+                      "image/"
+                  ):
+
+                      return False
+
+
+                  ext = (
+                      ".png"
+                      if content_type == "image/png"
+                      else ".jpg"
+                  )
+
+
+                  output = (
+                      f"input/assets/scene"
+                      f"{scene_number}{ext}"
+                  )
+
+
+                  with open(
+                      output,
+                      "wb"
+                  ) as f:
+
+                      f.write(data)
+
+
+                  if os.path.getsize(output) > 0:
+
+                      used_urls.add(url)
+
+                      print(
+                          "SCENE",
+                          scene_number,
+                          "VISUAL URL SUCCESS:",
+                          url
+                      )
+
+                      return True
+
+              except Exception:
+
+                  pass
+
+              return False
+
+
+          # --------------------------------------------------
+          # SCENE-FIRST VISUAL MATCHING
+          # --------------------------------------------------
+
+          downloaded = 0
+
+
+          for index, scene in enumerate(
+              scenes[:4],
+              1
+          ):
+
+              scene_ids, scene_urls = find_media(
+                  scene
+              )
+
+
+              matched = False
+
+
+              # First priority:
+              # image IDs directly inside this scene.
+
+              for fid in scene_ids:
+
+                  if save_drive_image(
+                      fid,
+                      index
+                  ):
+
+                      matched = True
                       break
-                  try:
-                      req = urllib.request.Request(url, headers={"User-Agent":"IndiaNewsHub/1.0"})
-                      with urllib.request.urlopen(req, timeout=30) as r:
-                          data = r.read()
-                      ctype = (r.headers.get("Content-Type") or "").split(";")[0]
-                      if not ctype.startswith("image/"):
-                          continue
-                      ext = ".png" if ctype == "image/png" else ".jpg"
-                      out = f"input/assets/scene{downloaded+1}{ext}"
-                      with open(out, "wb") as f:
-                          f.write(data)
-                      if os.path.getsize(out) > 0:
-                          downloaded += 1
-                          print("VISUAL URL DOWNLOAD SUCCESS:", downloaded, url)
-                  except Exception:
-                      pass
 
-          print("TOTAL VISUALS READY:", downloaded)
+
+              # Second priority:
+              # image URLs directly inside this scene.
+
+              if not matched:
+
+                  for url in scene_urls:
+
+                      if save_url_image(
+                          url,
+                          index
+                      ):
+
+                          matched = True
+                          break
+
+
+              if matched:
+
+                  downloaded += 1
+
+                  print(
+                      "SCENE",
+                      index,
+                      "MATCH TYPE: SCENE-SPECIFIC"
+                  )
+
+              else:
+
+                  print(
+                      "SCENE",
+                      index,
+                      "NO DIRECT VISUAL MATCH"
+                  )
+
+
+          # --------------------------------------------------
+          # SAFE FALLBACK
+          # --------------------------------------------------
+
+          for index in range(1, 5):
+
+              exists = False
+
+              for ext in (
+                  ".jpg",
+                  ".jpeg",
+                  ".png",
+                  ".webp"
+              ):
+
+                  if os.path.isfile(
+                      f"input/assets/scene{index}{ext}"
+                  ):
+
+                      exists = True
+                      break
+
+
+              if exists:
+                  continue
+
+
+              # Try unused Drive images.
+
+              for fid in global_image_ids:
+
+                  if fid in used_ids:
+                      continue
+
+                  if save_drive_image(
+                      fid,
+                      index
+                  ):
+
+                      downloaded += 1
+
+                      print(
+                          "SCENE",
+                          index,
+                          "MATCH TYPE: GLOBAL FALLBACK"
+                      )
+
+                      break
+
+
+          # --------------------------------------------------
+          # FINAL URL FALLBACK
+          # --------------------------------------------------
+
+          for index in range(1, 5):
+
+              exists = False
+
+              for ext in (
+                  ".jpg",
+                  ".jpeg",
+                  ".png",
+                  ".webp"
+              ):
+
+                  if os.path.isfile(
+                      f"input/assets/scene{index}{ext}"
+                  ):
+
+                      exists = True
+                      break
+
+
+              if exists:
+                  continue
+
+
+              for url in global_urls:
+
+                  if url in used_urls:
+                      continue
+
+                  if save_url_image(
+                      url,
+                      index
+                  ):
+
+                      downloaded += 1
+
+                      print(
+                          "SCENE",
+                          index,
+                          "MATCH TYPE: URL FALLBACK"
+                      )
+
+                      break
+
+
+          # --------------------------------------------------
+          # FINAL VALIDATION
+          # --------------------------------------------------
+
+          ready = 0
+
+
+          for index in range(1, 5):
+
+              found = False
+
+              for ext in (
+                  ".jpg",
+                  ".jpeg",
+                  ".png",
+                  ".webp"
+              ):
+
+                  path = (
+                      f"input/assets/"
+                      f"scene{index}{ext}"
+                  )
+
+                  if (
+                      os.path.isfile(path)
+                      and os.path.getsize(path) > 0
+                  ):
+
+                      print(
+                          "READY:",
+                          path,
+                          os.path.getsize(path),
+                          "bytes"
+                      )
+
+                      found = True
+                      ready += 1
+                      break
+
+
+              if not found:
+
+                  print(
+                      "MISSING VISUAL:",
+                      index
+                  )
+
+
+          print(
+              "TOTAL SCENE VISUALS READY:",
+              ready
+          )
+
+
+          if ready < 4:
+
+              raise SystemExit(
+                  "ERROR: fewer than 4 usable scene visuals"
+              )
+
           PY
 
-          echo "Input/asset files:"
-          find input -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
+
+          echo "----------------------------------------"
+          echo "FINAL INPUT / ASSET CHECK"
+          echo "----------------------------------------"
+
+          find input -maxdepth 2 -type f \
+            -printf '%p %s bytes\n' | sort
+
 
       - name: Build FFmpeg renderer
         run: docker build -t india-news-hub-renderer .
 
+
       - name: Run real news renderer
         run: |
+
           mkdir -p output
 
           docker run --rm \
@@ -213,8 +759,26 @@ jobs:
             india-news-hub-renderer
 
           echo "Rendered output:"
+
           ls -lh output/
+
           test -s output/india-news-hub-real-test.mp4
+
+
+      - name: Verify final video
+        run: |
+
+          echo "----------------------------------------"
+          echo "FINAL VIDEO CHECK"
+          echo "----------------------------------------"
+
+          ffprobe \
+            -v error \
+            -show_entries \
+            format=duration,size \
+            -of default=noprint_wrappers=1 \
+            output/india-news-hub-real-test.mp4
+
 
       - name: Upload MP4 artifact
         uses: actions/upload-artifact@v4
