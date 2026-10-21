@@ -122,19 +122,31 @@ make_scene() {
       scale=1920:1080:force_original_aspect_ratio=increase,
       crop=1920:1080,
       zoompan=z='$MOTION':x='$X':y='$Y':d=1:s=1280x720:fps=30,
-      eq=contrast=1.04:saturation=1.08,
+      eq=contrast=1.05:saturation=1.10,
       fade=t=in:st=0:d=0.35,
       fade=t=out:st=$FADE_OUT:d=0.45,
-      drawbox=x=0:y=0:w=1280:h=720:color=black@0.18:t=fill,
-      drawbox=x=0:y=0:w=1280:h=105:color=black@0.58:t=fill,
-      drawbox=x=0:y=585:w=1280:h=135:color=black@0.74:t=fill,
-      drawbox=x=0:y=0:w=7:h=720:color=0xE63946@0.96:t=fill,
-      drawbox=x=7:y=0:w='1273*t/$SCENE_DURATION':h=5:color=white@0.92:t=fill,
-      drawtext=text='INDIA NEWS HUB':fontcolor=white@0.97:fontsize=24:x=38:y=24,
-      drawtext=text='NEWS BRIEF':fontcolor=white@0.55:fontsize=16:x=38:y=58,
-      drawtext=text='0$n':fontcolor=white@0.18:fontsize=84:x=1145:y=18,
-      drawtext=textfile=$heading:fontcolor=white:fontsize=34:x=38:y=72:line_spacing=3,
-      drawtext=textfile=$text:fontcolor=white@0.97:fontsize=26:x=42:y=610:line_spacing=8
+
+      drawbox=x=0:y=0:w=1280:h=720:color=black@0.12:t=fill,
+
+      drawbox=x=0:y=0:w=1280:h=92:color=black@0.68:t=fill,
+      drawbox=x=0:y=0:w=8:h=720:color=0xE63946@0.96:t=fill,
+
+      drawbox=x=0:y=560:w=1280:h=160:color=black@0.78:t=fill,
+      drawbox=x=0:y=560:w=1280:h=4:color=0xE63946@0.95:t=fill,
+
+      drawbox=x=8:y=0:w='1272*t/$SCENE_DURATION':h=4:color=white@0.90:t=fill,
+
+      drawtext=text='INDIA NEWS HUB':fontcolor=white@0.98:fontsize=25:x=36:y=20,
+      drawtext=text='NEWS BRIEF':fontcolor=white@0.60:fontsize=15:x=37:y=54,
+      drawtext=text='SCENE 0$n':fontcolor=white@0.28:fontsize=24:x=1120:y=32,
+
+      drawtext=textfile=$heading:fontcolor=white:fontsize=34:
+      x=38:y=105:line_spacing=5:
+      shadowcolor=black@0.75:shadowx=2:shadowy=2,
+
+      drawtext=textfile=$text:fontcolor=white@0.96:fontsize=23:
+      x=42:y=585:line_spacing=7:
+      shadowcolor=black@0.80:shadowx=2:shadowy=2
     " \
     -c:v libx264 \
     -preset veryfast \
