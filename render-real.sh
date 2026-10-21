@@ -82,8 +82,8 @@ echo "SCENE DURATION: $SCENE_DURATION"
 
 find_asset() {
   for ext in jpg jpeg png webp; do
-    if [ -s "/workspace/assets/scene$1.$ext" ]; then
-      echo "/workspace/assets/scene$1.$ext"
+    if [ -s "/workspace/input/assets/scene$1.$ext" ]; then
+      echo "/workspace/input/assets/scene$1.$ext"
       return 0
     fi
   done
