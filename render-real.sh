@@ -160,12 +160,24 @@ for n in 1 2 3 4; do
   make_scene "$n" "$img"
 done
 
-# Join the four animated scenes without shortening the voice timeline.
-# Each scene already has a short fade-in/fade-out, so the transition remains clean
-# while total video duration stays aligned with the voice.
-printf "file '/workspace/scenes/scene1.mp4'\nfile '/workspace/scenes/scene2.mp4'\nfile '/workspace/scenes/scene3.mp4'\nfile '/workspace/scenes/scene4.mp4'\n" > /workspace/concat.txt
+# Join the four animated scenes with clean broadcast-style transitions.
+# Audio timeline remains unchanged because the voice is added after the visual render.
 
-ffmpeg -y   -f concat   -safe 0   -i /workspace/concat.txt   -c copy   /workspace/video-only.mp4
+ffmpeg -y \
+  -i /workspace/scenes/scene1.mp4 \
+  -i /workspace/scenes/scene2.mp4 \
+  -i /workspace/scenes/scene3.mp4 \
+  -i /workspace/scenes/scene4.mp4 \
+  -filter_complex "
+    [0:v][1:v]xfade=transition=fade:duration=0.35:offset=$(awk "BEGIN {print $SCENE_DURATION-0.35}")[v1];
+    [v1][2:v]xfade=transition=fade:duration=0.35:offset=$(awk "BEGIN {print ($SCENE_DURATION*2)-0.35}")[v2];
+    [v2][3:v]xfade=transition=fade:duration=0.35:offset=$(awk "BEGIN {print ($SCENE_DURATION*3)-0.35}") [v]
+  " \
+  -map "[v]" \
+  -c:v libx264 \
+  -preset veryfast \
+  -pix_fmt yuv420p \
+  /workspace/video-only.mp4
 
 ffmpeg -y \
   -i /workspace/video-only.mp4 \
