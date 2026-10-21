@@ -772,12 +772,14 @@ jobs:
           echo "FINAL VIDEO CHECK"
           echo "----------------------------------------"
 
-          ffprobe \
+          docker run --rm \
+            -v "${{ github.workspace }}/output:/workspace/output" \
+            --entrypoint ffprobe \
+            india-news-hub-renderer \
             -v error \
-            -show_entries \
-            format=duration,size \
+            -show_entries format=duration,size \
             -of default=noprint_wrappers=1 \
-            output/india-news-hub-real-test.mp4
+            /workspace/output/india-news-hub-real-test.mp4
 
 
       - name: Upload MP4 artifact
